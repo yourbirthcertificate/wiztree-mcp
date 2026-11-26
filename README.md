@@ -24,9 +24,9 @@ You can also register directly from PowerShell in the extracted folder with the 
 codex mcp add wiztree -- (Get-Item .\wiztree-mcp.exe).FullName
 ```
 
-For a portable WizTree installation, set the MCP server’s `WIZTREE_PATH` environment variable to the full path of `WizTree64.exe`. By default, the server searches the standard Windows installation folders and then `PATH`.
+The server looks for the WizTree installer's registered location, then the standard Windows installation folders and `PATH`. For a portable copy, set `WIZTREE_PATH` to the full path of `WizTree64.exe` to override discovery.
 
-Scans run without elevation, so Windows never shows a UAC prompt, but WizTree then walks the folders instead of reading the NTFS master file table. That takes about 25 seconds for a drive with 1.5 million files. To trade a UAC prompt per scan for faster whole-drive scans, set `WIZTREE_ADMIN=1` in the MCP server's environment.
+Scans run with the current user's access by default. To let WizTree read the NTFS master file table for whole-drive scans, set `WIZTREE_ADMIN=1` in the MCP server's environment and approve the Windows UAC prompt. Cancelling from an unelevated MCP server stops it from waiting for the report. The elevated WizTree process may continue and leave a temporary export behind.
 
 ## Clients that take a URL
 
@@ -43,7 +43,7 @@ Set the client’s transport to **Streamable HTTP** and its URL to `http://127.0
 | Tool | Use |
 | --- | --- |
 | `list_drives` | List Windows drive letters and types. Fixed drives also report total and available bytes when accessible. |
-| `scan` | Supply a drive or absolute folder path. The report includes totals, the largest files in the whole tree, the largest immediate subfolders, and file types ranked by total bytes. |
+| `scan` | Supply a drive, absolute folder path, or accessible UNC share. The report includes totals, the largest files in the whole tree, the largest immediate subfolders, and file types ranked by total bytes. |
 | `get_scan` | Retrieve the report using its `scan_id`. For a running scan, the call waits for up to `wait_seconds` (0–15, default 5). |
 | `cancel_scan` | Stop a running scan by ID. |
 
@@ -51,7 +51,9 @@ For example, `scan` with `{"path":"D:\\Media","rank_by":"allocated","limit":5}` 
 
 WizTree supplies the root and folder totals. Parent folder sizes already include their descendants. File-type totals group file entries by their last extension, ignoring case. An empty extension represents files such as `README` and `.env`. Additional hard-link entries marked by WizTree contribute zero allocated bytes. Scans use the account’s existing access rights, so protected folders can be absent from the results. [WizTree export format](https://diskanalyzer.com/guide)
 
-A small scan returns its report immediately. Longer scans return `running` and a `scan_id`. One scan runs at a time per server process, with a one-hour timeout. The last eight scan IDs remain available while that process runs. The server streams a temporary CSV from disk, removes it after processing, and keeps the summaries in memory. Results sent to the AI client include paths and sizes.
+A small scan returns its report immediately. Longer scans return `running` and a `scan_id`. One scan runs at a time per server process, with a one-hour timeout. Repeating an active scan with the same normalized path, ranking metric and limit reuses that scan's ID. Requests for a different scan can be retried after the active one finishes. The last eight scan IDs remain available while that process runs. The server streams a temporary CSV from disk, removes it after processing, and keeps the summaries in memory. Results sent to the AI client include paths and sizes.
+
+Clients that read `structuredContent` can add `--summary-text` to the launch arguments. Completed scans then carry a short text summary alongside the full structured report. The default also includes the full report as JSON text for clients that only read text.
 
 ## Build from source
 
