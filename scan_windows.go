@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 type Drive struct {
@@ -64,6 +65,9 @@ func wiztreePath() (string, error) {
 		}
 		return p, nil
 	}
+	if p := registeredWizTree(); p != "" {
+		return p, nil
+	}
 	for _, name := range []string{"WizTree64.exe", "WizTree.exe"} {
 		for _, id := range []*windows.KNOWNFOLDERID{windows.FOLDERID_ProgramFiles, windows.FOLDERID_ProgramFilesX86} {
 			base, err := windows.KnownFolderPath(id, 0)
@@ -80,6 +84,30 @@ func wiztreePath() (string, error) {
 		}
 	}
 	return "", errors.New("install WizTree or set WIZTREE_PATH to the full path of WizTree64.exe")
+}
+
+func registeredWizTree() string {
+	const uninstallKey = `SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\WizTree_is1`
+	for _, hive := range []registry.Key{registry.CURRENT_USER, registry.LOCAL_MACHINE} {
+		for _, view := range []uint32{registry.WOW64_64KEY, registry.WOW64_32KEY} {
+			key, err := registry.OpenKey(hive, uninstallKey, registry.QUERY_VALUE|view)
+			if err != nil {
+				continue
+			}
+			dir, _, err := key.GetStringValue("InstallLocation")
+			key.Close()
+			if err != nil || !filepath.IsAbs(dir) {
+				continue
+			}
+			for _, name := range []string{"WizTree64.exe", "WizTree.exe"} {
+				path := filepath.Join(dir, name)
+				if info, err := os.Stat(path); err == nil && !info.IsDir() {
+					return path
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // adminRequested reports whether WIZTREE_ADMIN asks WizTree to elevate. When it
@@ -120,6 +148,8 @@ type ScanResult struct {
 
 type job struct {
 	id, path string
+	rankBy   string
+	limit    int
 	done     chan struct{}
 	cancel   context.CancelFunc
 	// The worker publishes final by closing done after writing it.
@@ -173,6 +203,9 @@ func (s *scans) start(ctx context.Context, input ScanInput) (ScanResult, error) 
 	if !filepath.IsAbs(path) || strings.HasPrefix(path, `\\.\`) || strings.HasPrefix(path, `\\?\`) {
 		return ScanResult{}, errors.New("provide a drive letter, absolute directory or UNC share")
 	}
+	if len(filepath.VolumeName(path)) == 2 {
+		path = strings.ToUpper(path[:1]) + path[1:]
+	}
 	st, err := os.Stat(path)
 	if err != nil {
 		return ScanResult{}, err
@@ -191,10 +224,14 @@ func (s *scans) start(ctx context.Context, input ScanInput) (ScanResult, error) 
 
 	s.mu.Lock()
 	if n := len(s.jobs); n > 0 {
+		active := s.jobs[n-1]
 		select {
-		case <-s.jobs[n-1].done:
+		case <-active.done:
 		default:
 			s.mu.Unlock()
+			if active.path == path && active.rankBy == input.RankBy && active.limit == limit {
+				return active.result(ctx, 0)
+			}
 			return ScanResult{}, errors.New("a scan is already running; wait for it to finish before starting another")
 		}
 	}
@@ -203,7 +240,7 @@ func (s *scans) start(ctx context.Context, input ScanInput) (ScanResult, error) 
 		return ScanResult{}, s.ctx.Err()
 	}
 	scanCtx, cancel := context.WithTimeout(s.ctx, time.Hour)
-	j := &job{id: rand.Text(), path: path, done: make(chan struct{}), cancel: cancel}
+	j := &job{id: rand.Text(), path: path, rankBy: input.RankBy, limit: limit, done: make(chan struct{}), cancel: cancel}
 	if len(s.jobs) >= 8 {
 		s.jobs = s.jobs[1:]
 	}

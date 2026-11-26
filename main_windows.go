@@ -27,7 +27,17 @@ func tool(name, description string, readOnly, idempotent, openWorld bool) *mcp.T
 	}}
 }
 
-func server(jobs *scans) *mcp.Server {
+func scanResponse(out ScanResult, err error, summaryText bool) (*mcp.CallToolResult, ScanResult, error) {
+	if err != nil || !summaryText || out.Report == nil {
+		return nil, out, err
+	}
+	report := out.Report
+	text := fmt.Sprintf("Scan %s completed for %s. %d files, %d folders, %d allocated bytes. See the structured result for rankings.",
+		out.ID, out.Path, report.Files, report.Folders, report.Root.Allocated)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}, out, nil
+}
+
+func server(jobs *scans, summaryText bool) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "wiztree-mcp", Version: version}, &mcp.ServerOptions{
 		Instructions: "Use scan on the requested Windows path. If it returns running, call get_scan with its scan_id until complete. Each report includes the root totals, largest files anywhere beneath it, immediate child folders, and file extensions. Scan a child folder to drill down.",
 	})
@@ -39,7 +49,7 @@ func server(jobs *scans) *mcp.Server {
 	mcp.AddTool(s, tool("scan", "Analyze a Windows drive, folder, or network share with WizTree. Small scans return a report immediately. Longer scans return a scan_id for get_scan.", true, false, true),
 		func(ctx context.Context, r *mcp.CallToolRequest, in ScanInput) (*mcp.CallToolResult, ScanResult, error) {
 			out, err := jobs.start(ctx, in)
-			return nil, out, err
+			return scanResponse(out, err, summaryText)
 		})
 	mcp.AddTool(s, tool("get_scan", "Wait briefly for a previous scan and retrieve its status and report. Retry while running.", true, true, false),
 		func(ctx context.Context, r *mcp.CallToolRequest, in GetInput) (*mcp.CallToolResult, ScanResult, error) {
@@ -55,9 +65,9 @@ func server(jobs *scans) *mcp.Server {
 				return nil, ScanResult{}, err
 			}
 			out, err := j.result(ctx, time.Duration(seconds)*time.Second)
-			return nil, out, err
+			return scanResponse(out, err, summaryText)
 		})
-	mcp.AddTool(s, tool("cancel_scan", "Stop the specified background scan. Completed reports remain available.", false, true, false),
+	mcp.AddTool(s, tool("cancel_scan", "Cancel the specified scan. An elevated WizTree process may keep running. Completed reports remain available.", false, true, false),
 		func(ctx context.Context, r *mcp.CallToolRequest, in ScanID) (*mcp.CallToolResult, ScanResult, error) {
 			j, err := jobs.find(in.ID)
 			if err != nil {
@@ -65,7 +75,7 @@ func server(jobs *scans) *mcp.Server {
 			}
 			j.cancel()
 			out, err := j.result(ctx, time.Second)
-			return nil, out, err
+			return scanResponse(out, err, summaryText)
 		})
 	return s
 }
@@ -132,6 +142,7 @@ func run() error {
 	client := flag.String("config", "", "print registration settings for json, claude, cursor, vscode or codex and exit")
 	httpMode := flag.Bool("http", false, "serve Streamable HTTP on loopback; default transport is stdio")
 	port := flag.Int("port", 57421, "loopback port for HTTP mode")
+	summaryText := flag.Bool("summary-text", false, "use a compact text summary for clients that read structured scan results")
 	flag.Parse()
 	if *client != "" {
 		return config(*client)
@@ -145,7 +156,7 @@ func run() error {
 		jobs.mu.Unlock()
 		jobs.wg.Wait()
 	}()
-	s := server(jobs)
+	s := server(jobs, *summaryText)
 	if *httpMode {
 		return serveHTTP(ctx, s, *port)
 	}
