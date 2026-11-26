@@ -18,14 +18,12 @@ import (
 // version is overridden at build time with -ldflags "-X main.version=1.2.3".
 var version = "1.0.0"
 
-// tool builds a tool definition. Every tool here is local-only and
-// non-destructive, and repeating a call has no extra effect, so only readOnly varies.
-func tool(name, description string, readOnly bool) *mcp.Tool {
+func tool(name, description string, readOnly, idempotent, openWorld bool) *mcp.Tool {
 	return &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{
 		ReadOnlyHint:    readOnly,
 		DestructiveHint: new(bool),
-		IdempotentHint:  true,
-		OpenWorldHint:   new(bool),
+		IdempotentHint:  idempotent,
+		OpenWorldHint:   &openWorld,
 	}}
 }
 
@@ -33,17 +31,17 @@ func server(jobs *scans) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "wiztree-mcp", Version: version}, &mcp.ServerOptions{
 		Instructions: "Use scan on the requested Windows path. If it returns running, call get_scan with its scan_id until complete. Each report includes the root totals, largest files anywhere beneath it, immediate child folders, and file extensions. Scan a child folder to drill down.",
 	})
-	mcp.AddTool(s, tool("list_drives", "List Windows drive letters and types. Includes capacity and available bytes for accessible fixed drives.", true),
+	mcp.AddTool(s, tool("list_drives", "List Windows drive letters and types. Includes capacity and available bytes for accessible fixed drives.", true, true, false),
 		func(ctx context.Context, r *mcp.CallToolRequest, in struct{}) (*mcp.CallToolResult, Drives, error) {
 			out, err := drives()
 			return nil, out, err
 		})
-	mcp.AddTool(s, tool("scan", "Analyze a Windows drive or folder with WizTree. Small scans return a report immediately. Longer scans return a scan_id for get_scan. Uses current account access and reads file metadata.", true),
+	mcp.AddTool(s, tool("scan", "Analyze a Windows drive, folder, or network share with WizTree. Small scans return a report immediately. Longer scans return a scan_id for get_scan.", true, false, true),
 		func(ctx context.Context, r *mcp.CallToolRequest, in ScanInput) (*mcp.CallToolResult, ScanResult, error) {
 			out, err := jobs.start(ctx, in)
 			return nil, out, err
 		})
-	mcp.AddTool(s, tool("get_scan", "Wait briefly for a previous scan and retrieve its status and report. Retry while running.", true),
+	mcp.AddTool(s, tool("get_scan", "Wait briefly for a previous scan and retrieve its status and report. Retry while running.", true, true, false),
 		func(ctx context.Context, r *mcp.CallToolRequest, in GetInput) (*mcp.CallToolResult, ScanResult, error) {
 			seconds := 5
 			if in.Wait != nil {
@@ -59,7 +57,7 @@ func server(jobs *scans) *mcp.Server {
 			out, err := j.result(ctx, time.Duration(seconds)*time.Second)
 			return nil, out, err
 		})
-	mcp.AddTool(s, tool("cancel_scan", "Stop the specified background scan. Completed reports remain available.", false),
+	mcp.AddTool(s, tool("cancel_scan", "Stop the specified background scan. Completed reports remain available.", false, true, false),
 		func(ctx context.Context, r *mcp.CallToolRequest, in ScanID) (*mcp.CallToolResult, ScanResult, error) {
 			j, err := jobs.find(in.ID)
 			if err != nil {
