@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -79,6 +80,21 @@ func wiztreePath() (string, error) {
 		}
 	}
 	return "", errors.New("install WizTree or set WIZTREE_PATH to the full path of WizTree64.exe")
+}
+
+// adminRequested reports whether WIZTREE_ADMIN asks WizTree to elevate. When it
+// is set, WizTree can read the NTFS master file table, which is much faster on
+// whole drives, but Windows shows a UAC prompt for every scan.
+func adminRequested() (bool, error) {
+	v := os.Getenv("WIZTREE_ADMIN")
+	if v == "" {
+		return false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, errors.New("WIZTREE_ADMIN must be 1 or 0")
+	}
+	return b, nil
 }
 
 type ScanInput struct {
@@ -168,6 +184,10 @@ func (s *scans) start(ctx context.Context, input ScanInput) (ScanResult, error) 
 	if err != nil {
 		return ScanResult{}, err
 	}
+	admin, err := adminRequested()
+	if err != nil {
+		return ScanResult{}, err
+	}
 
 	s.mu.Lock()
 	if n := len(s.jobs); n > 0 {
@@ -195,7 +215,7 @@ func (s *scans) start(ctx context.Context, input ScanInput) (ScanResult, error) 
 		defer s.wg.Done()
 		defer close(j.done)
 		defer cancel()
-		report, err := runScan(scanCtx, exe, path, input.RankBy, limit)
+		report, err := runScan(scanCtx, exe, path, input.RankBy, limit, admin)
 		j.final = ScanResult{ID: j.id, Path: path, State: "complete", Report: report}
 		if err != nil {
 			j.final.State = "failed"
@@ -223,16 +243,26 @@ func (s *scans) find(id string) (*job, error) {
 	return nil, errors.New("unknown or expired scan_id; start a new scan")
 }
 
-func runScan(ctx context.Context, exe, path, metric string, limit int) (*Report, error) {
+// wiztreeArgs builds the WizTree command line. Without admin, /admin=0 stops
+// WizTree from showing a UAC prompt, at the cost of the slower non-MFT scan.
+func wiztreeArgs(path, export, configDir string, admin bool) []string {
+	elevate := "/admin=0"
+	if admin {
+		elevate = "/admin=1"
+	}
+	return []string{path, elevate, "/export=" + export, "/configfolder=" + configDir,
+		"/exportfolders=1", "/exportfiles=1", "/exportdrivecapacity=0", "/exportmaxdepth=0",
+		"/exportmftrecno=0", "/exportallsizes=0", "/exportsplitfilename=0", "/exportpercentofparent=0", "/exportalldates=0"}
+}
+
+func runScan(ctx context.Context, exe, path, metric string, limit int, admin bool) (*Report, error) {
 	dir, err := os.MkdirTemp("", "wiztree-mcp-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(dir)
 	export := filepath.Join(dir, "scan.csv")
-	cmd := exec.CommandContext(ctx, exe, path, "/admin=0", "/export="+export, "/configfolder="+dir,
-		"/exportfolders=1", "/exportfiles=1", "/exportdrivecapacity=0", "/exportmaxdepth=0",
-		"/exportmftrecno=0", "/exportallsizes=0", "/exportsplitfilename=0", "/exportpercentofparent=0", "/exportalldates=0")
+	cmd := exec.CommandContext(ctx, exe, wiztreeArgs(path, export, dir, admin)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("WizTree export failed: %w", err)

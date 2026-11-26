@@ -46,3 +46,39 @@ func TestIncompleteExport(t *testing.T) {
 		}
 	}
 }
+
+func TestWizTreeArgsAdmin(t *testing.T) {
+	has := func(args []string, want string) bool {
+		for _, a := range args {
+			if a == want {
+				return true
+			}
+		}
+		return false
+	}
+	off := wiztreeArgs(`C:\`, `C:\x\scan.csv`, `C:\x`, false)
+	on := wiztreeArgs(`C:\`, `C:\x\scan.csv`, `C:\x`, true)
+	if !has(off, "/admin=0") || has(off, "/admin=1") {
+		t.Errorf("default args should pass only /admin=0: %v", off)
+	}
+	if !has(on, "/admin=1") || has(on, "/admin=0") {
+		t.Errorf("admin args should pass only /admin=1: %v", on)
+	}
+	if off[0] != `C:\` || on[0] != `C:\` {
+		t.Errorf("path must stay the first argument")
+	}
+}
+
+func TestAdminRequested(t *testing.T) {
+	for _, c := range []struct {
+		env     string
+		want    bool
+		wantErr bool
+	}{{"", false, false}, {"0", false, false}, {"1", true, false}, {"true", true, false}, {"maybe", false, true}} {
+		t.Setenv("WIZTREE_ADMIN", c.env)
+		got, err := adminRequested()
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("WIZTREE_ADMIN=%q: got %v, %v", c.env, got, err)
+		}
+	}
+}
