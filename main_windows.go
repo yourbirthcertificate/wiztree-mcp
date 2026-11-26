@@ -16,7 +16,7 @@ import (
 )
 
 // version is overridden at build time with -ldflags "-X main.version=1.2.3".
-var version = "1.0.0"
+var version = "1.0.1"
 
 func tool(name, description string, readOnly, idempotent, openWorld bool) *mcp.Tool {
 	return &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{
