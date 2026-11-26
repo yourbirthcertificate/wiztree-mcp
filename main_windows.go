@@ -15,12 +15,22 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// version is overridden at build time with -ldflags "-X main.version=1.2.3".
+var version = "1.0.0"
+
+// tool builds a tool definition. Every tool here is local-only and
+// non-destructive, and repeating a call has no extra effect, so only readOnly varies.
 func tool(name, description string, readOnly bool) *mcp.Tool {
-	return &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly, DestructiveHint: new(bool)}}
+	return &mcp.Tool{Name: name, Description: description, Annotations: &mcp.ToolAnnotations{
+		ReadOnlyHint:    readOnly,
+		DestructiveHint: new(bool),
+		IdempotentHint:  true,
+		OpenWorldHint:   new(bool),
+	}}
 }
 
 func server(jobs *scans) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "wiztree-mcp", Version: "1.0.0"}, &mcp.ServerOptions{
+	s := mcp.NewServer(&mcp.Implementation{Name: "wiztree-mcp", Version: version}, &mcp.ServerOptions{
 		Instructions: "Use scan on the requested Windows path. If it returns running, call get_scan with its scan_id until complete. Each report includes the root totals, largest files anywhere beneath it, immediate child folders, and file extensions. Scan a child folder to drill down.",
 	})
 	mcp.AddTool(s, tool("list_drives", "List Windows drive letters and types. Includes capacity and available bytes for accessible fixed drives.", true),
