@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLocalizedReport(t *testing.T) {
@@ -80,5 +83,42 @@ func TestAdminRequested(t *testing.T) {
 		if got != c.want || (err != nil) != c.wantErr {
 			t.Errorf("WIZTREE_ADMIN=%q: got %v, %v", c.env, got, err)
 		}
+	}
+}
+
+func TestWaitForExport(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "scan.csv")
+	ctx := context.Background()
+
+	// The file appears late and is held open while it grows, like an elevated child.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(700 * time.Millisecond)
+		f, err := os.Create(name)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		for i := 0; i < 4; i++ {
+			f.WriteString("row\n")
+			time.Sleep(400 * time.Millisecond)
+		}
+	}()
+	if err := waitForExport(ctx, name, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Error("returned while the writer still held the file open")
+	}
+	if st, _ := os.Stat(name); st == nil || st.Size() != int64(4*len("row\n")) {
+		t.Errorf("export incomplete: %v", st)
+	}
+
+	// No export ever appears, as when the UAC prompt is declined.
+	if err := waitForExport(ctx, name+".missing", time.Second); err == nil {
+		t.Error("expected an error when no export appears")
 	}
 }

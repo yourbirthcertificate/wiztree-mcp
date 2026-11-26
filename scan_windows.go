@@ -255,6 +255,50 @@ func wiztreeArgs(path, export, configDir string, admin bool) []string {
 		"/exportmftrecno=0", "/exportallsizes=0", "/exportsplitfilename=0", "/exportpercentofparent=0", "/exportalldates=0"}
 }
 
+// An elevated WizTree is started by a launcher that exits straight away, so
+// cmd.Run returns before the export exists. Give the user this long to answer
+// the UAC prompt before concluding that no elevated scan is running.
+const exportAppearTimeout = 2 * time.Minute
+
+// exportClosed reports whether no other process still holds name open. WizTree
+// keeps the CSV open while it writes, so a successful exclusive open means done.
+func exportClosed(name string) bool {
+	p, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return false
+	}
+	h, err := windows.CreateFile(p, windows.GENERIC_READ, 0, nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		return false
+	}
+	windows.CloseHandle(h)
+	return true
+}
+
+// waitForExport blocks until the export exists, has stopped growing and is closed.
+func waitForExport(ctx context.Context, name string, appear time.Duration) error {
+	start := time.Now()
+	last := int64(-1)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+		st, err := os.Stat(name)
+		if err != nil {
+			if time.Since(start) > appear {
+				return errors.New("elevated WizTree produced no export; the UAC prompt may have been declined")
+			}
+			continue
+		}
+		if st.Size() > 0 && st.Size() == last && exportClosed(name) {
+			return nil
+		}
+		last = st.Size()
+	}
+}
+
 func runScan(ctx context.Context, exe, path, metric string, limit int, admin bool) (*Report, error) {
 	dir, err := os.MkdirTemp("", "wiztree-mcp-")
 	if err != nil {
@@ -266,6 +310,11 @@ func runScan(ctx context.Context, exe, path, metric string, limit int, admin boo
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("WizTree export failed: %w", err)
+	}
+	if admin {
+		if err := waitForExport(ctx, export, exportAppearTimeout); err != nil {
+			return nil, err
+		}
 	}
 	f, err := os.Open(export)
 	if err != nil {
