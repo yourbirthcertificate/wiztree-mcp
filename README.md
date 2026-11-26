@@ -26,6 +26,8 @@ codex mcp add wiztree -- (Get-Item .\wiztree-mcp.exe).FullName
 
 For a portable WizTree installation, set the MCP server’s `WIZTREE_PATH` environment variable to the full path of `WizTree64.exe`. By default, the server searches the standard Windows installation folders and then `PATH`.
 
+Scans run without elevation, so Windows never shows a UAC prompt, but WizTree then walks the folders instead of reading the NTFS master file table. That takes about 25 seconds for a drive with 1.5 million files. To trade a UAC prompt per scan for faster whole-drive scans, set `WIZTREE_ADMIN=1` in the MCP server's environment.
+
 ## Clients that take a URL
 
 Start the executable in PowerShell and keep the terminal open.

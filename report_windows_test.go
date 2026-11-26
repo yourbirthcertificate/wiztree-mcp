@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLocalizedReport(t *testing.T) {
@@ -44,5 +47,78 @@ func TestIncompleteExport(t *testing.T) {
 		if _, err := readReport(context.Background(), strings.NewReader(body), `D:\`, "size", 10); err == nil {
 			t.Fatalf("accepted malformed export %q", body)
 		}
+	}
+}
+
+func TestWizTreeArgsAdmin(t *testing.T) {
+	has := func(args []string, want string) bool {
+		for _, a := range args {
+			if a == want {
+				return true
+			}
+		}
+		return false
+	}
+	off := wiztreeArgs(`C:\`, `C:\x\scan.csv`, `C:\x`, false)
+	on := wiztreeArgs(`C:\`, `C:\x\scan.csv`, `C:\x`, true)
+	if !has(off, "/admin=0") || has(off, "/admin=1") {
+		t.Errorf("default args should pass only /admin=0: %v", off)
+	}
+	if !has(on, "/admin=1") || has(on, "/admin=0") {
+		t.Errorf("admin args should pass only /admin=1: %v", on)
+	}
+	if off[0] != `C:\` || on[0] != `C:\` {
+		t.Errorf("path must stay the first argument")
+	}
+}
+
+func TestAdminRequested(t *testing.T) {
+	for _, c := range []struct {
+		env     string
+		want    bool
+		wantErr bool
+	}{{"", false, false}, {"0", false, false}, {"1", true, false}, {"true", true, false}, {"maybe", false, true}} {
+		t.Setenv("WIZTREE_ADMIN", c.env)
+		got, err := adminRequested()
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("WIZTREE_ADMIN=%q: got %v, %v", c.env, got, err)
+		}
+	}
+}
+
+func TestWaitForExport(t *testing.T) {
+	name := filepath.Join(t.TempDir(), "scan.csv")
+	ctx := context.Background()
+
+	// The file appears late and is held open while it grows, like an elevated child.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(700 * time.Millisecond)
+		f, err := os.Create(name)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		for i := 0; i < 4; i++ {
+			f.WriteString("row\n")
+			time.Sleep(400 * time.Millisecond)
+		}
+	}()
+	if err := waitForExport(ctx, name, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	default:
+		t.Error("returned while the writer still held the file open")
+	}
+	if st, _ := os.Stat(name); st == nil || st.Size() != int64(4*len("row\n")) {
+		t.Errorf("export incomplete: %v", st)
+	}
+
+	// No export ever appears, as when the UAC prompt is declined.
+	if err := waitForExport(ctx, name+".missing", time.Second); err == nil {
+		t.Error("expected an error when no export appears")
 	}
 }
